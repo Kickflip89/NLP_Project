@@ -10,14 +10,12 @@ class PadWithin(nn.Module):
         self.stride = stride
         
     def forward(self, feats):
-        print(feats.size(), self.stride)
         self.w = torch.zeros(self.stride, self.stride)
         self.w[0,0] = 1
         self.w = self.w.expand(1, 1, self.stride, self.stride)
         feats = feats.unsqueeze(1)
         stride = self.stride
         res = F.conv_transpose2d(feats, self.w, stride=self.stride, groups=feats.size(1)).squeeze(1)
-        print(res.size())
         return res
 
 class Downsample(nn.Module):
