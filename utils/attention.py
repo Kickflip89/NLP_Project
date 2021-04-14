@@ -4,13 +4,29 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class PadWithin(nn.Module):
+    def __init__(self, stride=2):
+        super(PadWithin, self).__init__()
+        self.stride = stride
+        
+    def forward(self, feats):
+        print(feats.size(), self.stride)
+        self.w = torch.zeros(self.stride, self.stride)
+        self.w[0,0] = 1
+        self.w = self.w.expand(1, 1, self.stride, self.stride)
+        feats = feats.unsqueeze(1)
+        stride = self.stride
+        res = F.conv_transpose2d(feats, self.w, stride=self.stride, groups=feats.size(1)).squeeze(1)
+        print(res.size())
+        return res
+
 class Downsample(nn.Module):
     """
     Selects every nth element, where n is the index
     """
 
     def __init__(self, index):
-        super().__init__()
+        super(Downsample, self).__init__()
         self.index = index
 
     def forward(self, x):
@@ -120,24 +136,7 @@ def GatedLinear(in_features, out_features, dropout=0.0, bias=True):
         nn.GLU(),
         Linear(out_features, out_features, dropout, bias),
     )
-
-def MaskedSelfAttention(query, key, value):
-    src_len = key.size()[1]
-    q = query
-    k = key.permute(0,2,1)
-    v = value
-    attn_weights = torch.bmm(q, k)
-    attn_weights *= torch.tril(
-        attn_weights.data.new([1]).expand(src_len,src_len).clone(),
-        diagonal=-1).unsqueeze(0)
-    attn_weights += torch.triu(
-        attn_weights.data.new([-math.inf]).expand(src_len,src_len).clone(),
-        diagonal=0,
-    ).unsqueeze(0)
     
-    return attn_weights
-    
-
 
 class SingleAttention(nn.Module):
     
@@ -154,6 +153,7 @@ class SingleAttention(nn.Module):
         
         if self.downsample:
             self.ds_layer = Downsample(self.head_index)
+            self.pad_layer = PadWithin(self.head_index+1)
             out_size = self.head_dim
         else:
             out_size = self.head_dim * self.num_heads
@@ -176,16 +176,32 @@ class SingleAttention(nn.Module):
         
         self.dropout = nn.Dropout(p=dropout)
         
-    def forward(self, X):
-        batch_size, src_len, channels = X.size()
+    def MaskedSelfAttention(self, query, key, tgt_len):
+        src_len = key.size()[1]
+        q = query
+        k = key.permute(0,2,1)
+        attn_weights = torch.bmm(q, k)
+        attn_weights *= torch.tril(
+            attn_weights.data.new([1]).expand(src_len,src_len).clone(),
+            diagonal=-1).unsqueeze(0)
+        attn_weights += torch.triu(
+            attn_weights.data.new([-math.inf]).expand(src_len,src_len).clone(),
+            diagonal=0).unsqueeze(0)
+    
+        if self.downsample and self.head_index > 0:
+            attn_weights = self.pad_layer(attn_weights)
+            attn_weights = attn_weights[:,:tgt_len, :tgt_len]
+        return attn_weights
         
+    def forward(self, X):
+        batch_size, tgt_len, channels = X.size()
         """
         Scaled dot-product attention (Attention is all you need, Vaswani et. al):
         Compute bmm(Softmax(bmm(q,k^T)), v)
         """
         if self.downsample:
             k = self.ds_layer(X)
-            v = self.ds_layer(X)
+            v = X
             q = self.ds_layer(X)
         else:
             k = X
@@ -195,17 +211,68 @@ class SingleAttention(nn.Module):
         k = self.keys(k)
         v = self.values(v)
         q *= self.scaling
-        print(q.size())
-        print(k.size())
-        print(v.size())
-
+        
         #mask future timesteps
-        attn_weights = MaskedSelfAttention(q,k,v)
+        attn_weights = self.MaskedSelfAttention(q,k, tgt_len)
         
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_weights = self.dropout(attn_weights)
-        
         attn = torch.bmm(attn_weights, v)
+        
+        if self.downsample:
+            attn = attn.contiguous().view(batch_size, tgt_len, self.head_dim)
+        else:
+            attn = attn.contiguous().view(batch_size, tgt_len, self.embed_dim)
+        
         attn = self.out(attn)
         
         return attn, attn_weights
+    
+class MultiHeadAttention(nn.ModuleList):
+    
+    def __init__(self, out_channels, embed_dim, num_heads, dropout=0.0, bias=True,
+                downsample=True, conv_GLU=True):
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.downsample = downsample
+        self.conv_GLU = conv_GLU
+        assert self.head_dim * num_heads == embed_dim
+        
+        if self.downsample:
+            attention_heads = []
+            for index in range(num_heads):
+                attention_heads.append(
+                    SingleAttention(
+                        out_channels, self.embed_dim, self.head_dim,
+                        self.downsample, index, dropout, bias,
+                        self.num_heads, self.conv_GLU 
+                    )
+                )
+            super().__init__(modules=attention_heads)
+            self.out = Linear(embed_dim, out_channels, dropout=dropout, bias=bias)
+        else:
+            super().__init__()
+            self.attention_module = SingleAttention(
+                out_channels, self.embed_dim, self.head_dim,
+                self.downsample, 1, dropout, bias,
+                self.num_heads, self.conv_GLU
+            )
+
+    def forward(self, X):
+        attn_list = []
+        attn_weight_list = []
+        if self.downsample:
+            for head_index in range(self.num_heads):
+                attn, attn_weight = self[head_index](X)
+                attn_list.append(attn)
+                attn_weight_list.append(attn_weight)
+            full_attn = torch.cat(attn_list, dim=2)
+            full_attn = self.out(full_attn)
+            return full_attn
+        else:
+            attn, attn_weight = self.attention(X)
+            attn_list.append(attn)
+            attn_weight_list.append(attn_weight_list)
+            full_attn = torch.cat(attn_list, dim=2)
+            return full_attn
