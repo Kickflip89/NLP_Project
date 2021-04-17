@@ -146,7 +146,6 @@ class SingleAttention(nn.Module):
         self.head_index = head_index
         self.head_dim = head_dim
         self.num_heads = num_heads
-        self.projection = None
         self.downsample = downsample
         
         if self.downsample:
@@ -191,27 +190,25 @@ class SingleAttention(nn.Module):
             attn_weights = attn_weights[:,:tgt_len, :tgt_len]
         return attn_weights
         
-    def forward(self, X):
-        batch_size, tgt_len, channels = X.size()
+    def forward(self, k,v,q):
+        batch_size, tgt_len, channels = k.size()
         """
         Scaled dot-product attention (Attention is all you need, Vaswani et. al):
         Compute bmm(Softmax(bmm(q,k^T)), v)
         """
         if self.downsample:
-            k = self.ds_layer(X)
-            v = X
-            q = self.ds_layer(X)
-        else:
-            k = X
-            v = X
-            q = X
+            k = self.ds_layer(k)
+            q = self.ds_layer(q)
         q = self.queries(q)
         k = self.keys(k)
         v = self.values(v)
         q *= self.scaling
         
         #mask future timesteps
-        attn_weights = self.MaskedSelfAttention(q,k, tgt_len)
+        if self.downsample:
+            attn_weights = self.MaskedSelfAttention(q,k,tgt_len)
+        else:
+            attn_weights = torch.bmm(q,k.transpose(1,2))
         
         attn_weights = F.softmax(attn_weights, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -226,10 +223,17 @@ class SingleAttention(nn.Module):
         
         return attn, attn_weights
     
+    
 class MultiHeadAttention(nn.ModuleList):
     
-    def __init__(self, out_channels, embed_dim, num_heads, dropout=0.0, bias=True,
-                downsample=True, conv_GLU=True):
+    def __init__(self,
+                 out_channels,
+                 embed_dim,
+                 num_heads,
+                 dropout=0.0,
+                 bias=True,
+                 downsample=True,
+                 conv_GLU=True):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.head_dim = embed_dim // num_heads
@@ -257,20 +261,91 @@ class MultiHeadAttention(nn.ModuleList):
                 self.num_heads, self.conv_GLU
             )
 
-    def forward(self, X):
+    def forward(self,k,v,q):
         attn_list = []
         attn_weight_list = []
         if self.downsample:
             for head_index in range(self.num_heads):
-                attn, attn_weight = self[head_index](X)
+                attn, attn_weight = self[head_index](k,v,q)
                 attn_list.append(attn)
                 attn_weight_list.append(attn_weight)
             full_attn = torch.cat(attn_list, dim=2)
             full_attn = self.out(full_attn)
             return full_attn
         else:
-            attn, attn_weight = self.attention(X)
+            attn, attn_weight = self.attention(k,v,q)
             attn_list.append(attn)
             attn_weight_list.append(attn_weight_list)
             full_attn = torch.cat(attn_list, dim=2)
             return full_attn
+        
+class SelfAttention(nn.Module):
+    def __init__(self, out_channels, embed_dim, num_heads, dropout=.1, bias=True, conv_GLU=True):
+        super(SelfAttention, self).__init__()
+        
+        self.q = Linear(out_channels, embed_dim, dropout, bias)
+        self.k = Linear(out_channels, embed_dim, dropout, bias)
+        self.v = Linear(out_channels, embed_dim, dropout, bias)
+        
+        self.attention = MultiHeadAttention(out_channels, embed_dim, num_heads, dropout, bias,
+                                            downsample=True, conv_GLU=conv_GLU)
+        
+        self.ln = nn.LayerNorm(out_channels)
+        
+    def forward(self, X):
+        res = X
+        
+        q = self.q(X)
+        k = self.k(X)
+        v = self.v(X)
+        X = self.attention(q,k,v)
+        return self.ln(X+res)
+    
+class EncoderAttention(nn.Module):
+    
+    def __init__(self, out_channels, embed_dim, head_dim, head_index=0, dropout=0.0,
+               bias=True, conv_GLU=True):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.dropout = nn.Dropout(dropout)
+        self.head_index = head_index
+        self.head_dim = head_dim
+
+        out_size = self.head_dim
+        
+        if conv_GLU:
+            self.keys = GLU_conv(self.embed_dim, out_size, dropout=dropout, bias=bias)
+            self.values = GLU_conv(self.embed_dim, out_size, dropout=dropout, bias=bias)
+        else:
+            self.keys = GatedLinear(self.embed_dim, out_size, dropout=dropout, bias=bias)
+            self.values = GatedLinear(self.embed_dim, out_size, dropout=dropout, bias=bias)
+            
+        self.queries = GatedLinear(self.embed_dim, out_size, bias=bias)
+        
+        self.out = Linear(out_size, out_channels, bias=bias)
+            
+        self.scaling = self.head_dim ** -0.5
+        
+        self.dropout = nn.Dropout(p=dropout)
+        
+    def forward(self, query, key, value):
+        batch_size, src_len, channels = key.size()
+        tgt_len = query.size(1)
+        """
+        Scaled dot-product attention (Attention is all you need, Vaswani et. al):
+        Compute bmm(Softmax(bmm(q,k^T)), v).  Here the keys and values are from
+        the encoder while the query is from the decoder.
+        """
+        q = self.queries(query)
+        k = self.keys(key).permute(0,2,1)
+        v = self.values(value)
+        q *= self.scaling
+
+        attn_weights = torch.bmm(q, k)      
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        attn = torch.bmm(attn_weights, v)
+        
+        attn = self.out(attn)
+        
+        return attn, attn_weights
