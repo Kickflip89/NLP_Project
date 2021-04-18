@@ -1,3 +1,9 @@
+import math
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 from utils.attention import SingleAttention, Linear, EncoderAttention, SelfAttention
 
 class GradMultiply(torch.autograd.Function):
@@ -50,24 +56,24 @@ class Decoder(nn.Module):
         encoder_a, encoder_b = encoder_outputs
         X = self.fc1(X)
         input_embed = X
-        avg_attn = None
+        #avg_attn = None
         for conv, attention, self_attention in zip(self.conv, self.enc_attention, self.self_attention):
             residual = X
             X = conv(X.transpose(1,2)).transpose(1,2)
             r=X
             X, _enc_att = attention(X+input_embed, encoder_a, encoder_b)
             X = X + r
-            if avg_attn == None:
-                avg_attn = _enc_att
-            else:
-                avg_attn.add_(_enc_att)
+            #if avg_attn == None:
+                #avg_attn = _enc_att
+            #else:
+                #avg_attn.add_(_enc_att)
             X = self_attention(X)
             X = (X+residual) * math.sqrt(.5)
             
         X = self.fc2(X)
         X = self.dropout_layer(X)
-        
-        return self.fc3(X), avg_attn
+        X = X[:,-1:,:].squeeze(1)
+        return self.fc3(X)#, avg_attn
 
 class Encoder(nn.Module):
     def __init__(self, in_dim, embed_dim=240, dropout=.1, num_layers=2, conv_GLU=True):
@@ -107,3 +113,32 @@ class Encoder(nn.Module):
         y = X + input_embed * math.sqrt(.5)
         
         return (X, y)
+
+    class StoryGenerator(nn.Module):
+    def __init__(self, vocab_size, w2v_dim, embed_dim, prompt_len,
+                 decoder_heads, decoder_layers, encoder_layers,
+                 dropout=.1, conv_GLU=True):
+        super(StoryGenerator, self).__init__()
+        self.vocab_size = vocab_size
+        self.w2v_dim = w2v_dim
+        self.embed_dim = embed_dim
+        self.prompt_len = prompt_len
+        self.num_heads = decoder_heads
+        self.d_layers = decoder_layers
+        self.e_layers = encoder_layers
+        self.conv_GLU=conv_GLU
+        
+        self.encoder = Encoder(w2v_dim, embed_dim, dropout=dropout,
+                         num_layers=2, conv_GLU=conv_GLU)
+        
+        self.decoder = Decoder(w2v_dim, vocab_size, out_channels=512, embed_dim=embed_dim,
+                         num_heads = self.num_heads, max_len=1056, num_layers=self.d_layers,
+                         dropout=dropout, conv_GLU=True)
+        
+    def forward(self, prompt, prev_output):
+        """
+            tokens are of the form B X T X C
+        """
+        encoder_out = self.encoder(prompt)
+        decoder_out = self.decoder(prev_output, encoder_out)
+        return F.softmax(decoder_out, dim=-1)
