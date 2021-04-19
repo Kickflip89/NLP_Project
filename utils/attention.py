@@ -10,12 +10,14 @@ class PadWithin(nn.Module):
         self.stride = stride
         
     def forward(self, feats):
+        #print(feats.size(), self.stride)
         self.w = torch.zeros(self.stride, self.stride)
         self.w[0,0] = 1
         self.w = self.w.expand(1, 1, self.stride, self.stride)
         feats = feats.unsqueeze(1)
         stride = self.stride
         res = F.conv_transpose2d(feats, self.w, stride=self.stride, groups=feats.size(1)).squeeze(1)
+        #print(res.size())
         return res
 
 class Downsample(nn.Module):
@@ -57,7 +59,7 @@ class GLU_conv(nn.Module):
     Output shape: (bs, seq_len, channels)
     """
     def __init__(self, in_dim, out_dim, k=3, dropout=0.0, bias=True):
-        super().__init__()
+        super(GLU_conv,self).__init__()
 
         #for reshaping residual if necessary:
         self.convres1 = nn.utils.weight_norm(nn.Conv1d(in_dim, out_dim*2,
@@ -172,6 +174,52 @@ class SingleAttention(nn.Module):
         self.scaling = self.head_dim ** -0.5
         
         self.dropout = nn.Dropout(p=dropout)
+        
+    def MaskedSelfAttention(self, query, key, tgt_len):
+        src_len = key.size()[1]
+        q = query
+        k = key.permute(0,2,1)
+        attn_weights = torch.bmm(q, k)
+        attn_weights *= torch.tril(
+            attn_weights.data.new([1]).expand(src_len,src_len).clone(),
+            diagonal=-1).unsqueeze(0)
+        attn_weights += torch.triu(
+            attn_weights.data.new([-1000]).expand(src_len,src_len).clone(),
+            diagonal=0).unsqueeze(0)
+        
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        if self.downsample and self.head_index > 0:
+            attn_weights = self.pad_layer(attn_weights)
+            attn_weights = attn_weights[:,:tgt_len, :tgt_len]
+        return attn_weights
+        
+    def forward(self, k,v,q):
+        batch_size, tgt_len, channels = k.size()
+        """
+        Scaled dot-product attention (Attention is all you need, Vaswani et. al):
+        Compute bmm(Softmax(bmm(q,k^T)), v)
+        """
+        if self.downsample:
+            k = self.ds_layer(k)
+            q = self.ds_layer(q)
+        q = self.queries(q)
+        k = self.keys(k)
+        v = self.values(v)
+        q *= self.scaling
+        
+        #mask future timesteps
+        if self.downsample:
+            attn_weights = self.MaskedSelfAttention(q,k, tgt_len)
+        else:
+            attn_weights = torch.bmm(q,k.transpose(1,2))
+            attn_weights = F.softmax(attn_weights, dim=-1)
+        
+        attn_weights = self.dropout(attn_weights)
+        attn = torch.bmm(attn_weights, v)
+        
+        attn = self.out(attn)
+        
+        return attn, attn_weights
         
     def MaskedSelfAttention(self, query, key, tgt_len):
         src_len = key.size()[1]
