@@ -20,7 +20,7 @@ trainLoader = DataLoader(t_ds, 32)
 valLoader = DataLoader(v_ds, 32)
   
 sg = StoryGenerator(
-    len(wv.wv.vocab), wv.vector_size, 120, 82, 3, 3, 2
+    len(wv.wv.vocab), wv.vector_size, 120, 82, 3, 3, 1
 )
 
 MODEL_PATH = './model/checkpoint.pt'
