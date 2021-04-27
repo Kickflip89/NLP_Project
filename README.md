@@ -9,11 +9,9 @@ contains the baseline single and multi-head attention classes and functions
 in Attention.py
 
 ## ./embedding
-loader.py - DataSet class to stream batches from disk
-
-trained.mdl - original w2v model (300 dimensions)
-
-w2v_128.mdl - w2v model used (128 dimensions)
+* loader.py - DataSet class to stream batches from disk
+* trained.mdl - original w2v model (300 dimensions)
+* w2v_128.mdl - w2v model used (128 dimensions)
 
 ## ./data
 contains some raw data from the last 5800 iterations
@@ -23,6 +21,5 @@ of the convolutional and linear versions of the model
 Jupyter notebooks containing some of the actual experiments run
 
 ## ./
-model.py - wrapper class for encoder-decoder architecture
-
-train.py - example training driver
+* model.py - wrapper class for encoder-decoder architecture
+* train.py - example training driver
