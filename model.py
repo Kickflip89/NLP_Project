@@ -7,6 +7,9 @@ import torch.nn.functional as F
 from utils.attention import SingleAttention, Linear, EncoderAttention, SelfAttention
 
 class GradMultiply(torch.autograd.Function):
+    """
+    Gradient scaling class from fairseq
+    """
     @staticmethod
     def forward(ctx, x, scale):
         ctx.scale = scale
@@ -18,6 +21,10 @@ class GradMultiply(torch.autograd.Function):
         return grad * ctx.scale, None
 
 class Decoder(nn.Module):
+    """
+        Unique implementation based on fairseq but tailored to our
+        embedding system
+    """
     def __init__(
                     self,
                     in_dim,
