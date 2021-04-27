@@ -4,6 +4,8 @@ Code repository for a short-story generator based on https://arxiv.org/abs/1805.
 Some methods were adapted from https://github.com/pytorch/fairseq/tree/master/fairseq
 under the MIT license and are not being used for profit.
 
+Model works with the WritingPrompts dataset: https://www.kaggle.com/ratthachat/writing-prompts
+
 ## ./utils
 contains the baseline single and multi-head attention classes and functions
 in Attention.py
