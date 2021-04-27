@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class PadWithin(nn.Module):
+    """
+        Pads the self-attention mask back to the original
+        time frame
+    """
     def __init__(self, stride=2):
         super(PadWithin, self).__init__()
         self.stride = stride
@@ -23,6 +27,7 @@ class PadWithin(nn.Module):
 class Downsample(nn.Module):
     """
     Selects every nth element, where n is the index
+    Based off of Fariseq implementation
     """
 
     def __init__(self, index):
@@ -41,7 +46,9 @@ def Linear(in_features, out_features, dropout=0.0, bias=True):
 
 
 def GatedLinear(in_features, out_features, dropout=0.0, bias=True):
-    """Weight-normalized Linear layer (input: B x T x C) with interspersed GLU units"""
+    """Weight-normalized Linear layer (input: B x T x C) with interspersed GLU units
+        Fairseq implementation
+    """
     return nn.Sequential(
         Linear(in_features, out_features * 4, dropout, bias),
         nn.GLU(),
@@ -57,6 +64,7 @@ class GLU_conv(nn.Module):
     Input shape: (bs, seq_len, channels)
     Intermediate representation: (bs, channels, seq_len)
     Output shape: (bs, seq_len, channels)
+    Author's implementation
     """
     def __init__(self, in_dim, out_dim, k=3, dropout=0.0, bias=True):
         super(GLU_conv,self).__init__()
@@ -120,7 +128,9 @@ class GLU_conv(nn.Module):
         return self.linear(X)
 
 def Linear(in_features, out_features, dropout=0.0, bias=True):
-    """Weight-normalized Linear layer (input: B x T x C)"""
+    """Weight-normalized Linear layer (input: B x T x C)
+        Fairseq implementation
+    """
     m = nn.Linear(in_features, out_features, bias=bias)
     m.weight.data.normal_(mean=0, std=math.sqrt((1 - dropout) / in_features))
     m.bias.data.zero_()
@@ -128,7 +138,8 @@ def Linear(in_features, out_features, dropout=0.0, bias=True):
 
 
 def GatedLinear(in_features, out_features, dropout=0.0, bias=True):
-    """Weight-normalized Linear layer (input: B x T x C) with interspersed GLU units"""
+    """Weight-normalized Linear layer (input: B x T x C) with interspersed GLU units
+        Fairseq implementation"""
     return nn.Sequential(
         Linear(in_features, out_features * 4, dropout, bias),
         nn.GLU(),
@@ -139,7 +150,9 @@ def GatedLinear(in_features, out_features, dropout=0.0, bias=True):
     
 
 class SingleAttention(nn.Module):
-    
+    """
+        Modified from fairseq's original code to include unique padding and convolutional GLU layers
+    """
     def __init__(self, out_channels, embed_dim, head_dim, downsample=True, head_index=0, dropout=0.0,
                bias=True, num_heads=1, conv_GLU=True):
         super().__init__()
@@ -220,60 +233,12 @@ class SingleAttention(nn.Module):
         attn = self.out(attn)
         
         return attn, attn_weights
-        
-    def MaskedSelfAttention(self, query, key, tgt_len):
-        src_len = key.size()[1]
-        q = query
-        k = key.permute(0,2,1)
-        attn_weights = torch.bmm(q, k)
-        attn_weights *= torch.tril(
-            attn_weights.data.new([1]).expand(src_len,src_len).clone(),
-            diagonal=-1).unsqueeze(0)
-        attn_weights += torch.triu(
-            attn_weights.data.new([-math.inf]).expand(src_len,src_len).clone(),
-            diagonal=0).unsqueeze(0)
-    
-        if self.downsample and self.head_index > 0:
-            attn_weights = self.pad_layer(attn_weights)
-            attn_weights = attn_weights[:,:tgt_len, :tgt_len]
-        return attn_weights
-        
-    def forward(self, k,v,q):
-        batch_size, tgt_len, channels = k.size()
-        """
-        Scaled dot-product attention (Attention is all you need, Vaswani et. al):
-        Compute bmm(Softmax(bmm(q,k^T)), v)
-        """
-        if self.downsample:
-            k = self.ds_layer(k)
-            q = self.ds_layer(q)
-        q = self.queries(q)
-        k = self.keys(k)
-        v = self.values(v)
-        q *= self.scaling
-        
-        #mask future timesteps
-        if self.downsample:
-            attn_weights = self.MaskedSelfAttention(q,k,tgt_len)
-        else:
-            attn_weights = torch.bmm(q,k.transpose(1,2))
-        
-        attn_weights = F.softmax(attn_weights, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        attn = torch.bmm(attn_weights, v)
-        
-        if self.downsample:
-            attn = attn.contiguous().view(batch_size, tgt_len, self.head_dim)
-        else:
-            attn = attn.contiguous().view(batch_size, tgt_len, self.embed_dim)
-        
-        attn = self.out(attn)
-        
-        return attn, attn_weights
     
     
 class MultiHeadAttention(nn.ModuleList):
-    
+    """
+        Modified version of fairseq's class
+    """
     def __init__(self,
                  out_channels,
                  embed_dim,
@@ -328,6 +293,9 @@ class MultiHeadAttention(nn.ModuleList):
             return full_attn
         
 class SelfAttention(nn.Module):
+    """
+        wrapper class for the decoder
+    """
     def __init__(self, out_channels, embed_dim, num_heads, dropout=.1, bias=True, conv_GLU=True):
         super(SelfAttention, self).__init__()
         
@@ -350,7 +318,9 @@ class SelfAttention(nn.Module):
         return self.ln(X+res)
     
 class EncoderAttention(nn.Module):
-    
+    """
+        Unique class for single-headed encoder
+    """
     def __init__(self, out_channels, embed_dim, head_dim, head_index=0, dropout=0.0,
                bias=True, conv_GLU=True):
         super().__init__()
