@@ -1,7 +1,7 @@
 # NLP_Project
-Code repository for a short-story generator / Gibbs sampler
+Code repository for a short-story generator based on https://arxiv.org/abs/1805.04833
 
-were adapted from https://github.com/pytorch/fairseq/tree/master/fairseq
+Some methods were adapted from https://github.com/pytorch/fairseq/tree/master/fairseq
 under the MIT license and are not being used for profit.
 
 ## ./utils
