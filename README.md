@@ -17,7 +17,7 @@ in Attention.py
 
 ## ./data
 contains some raw data from the last 5800 iterations
-of the convolutional and linear versions of the model
+of the convolutional and linear versions of the model (used by data_processing notebook)
 
 ## ./notebooks
 Jupyter notebooks containing some of the actual experiments run
